@@ -3,7 +3,7 @@ import datetime
 import random
 import time
 from pathlib import Path
-
+import os
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
 
@@ -77,6 +77,8 @@ def get_args_parser():
 
 def main(args):
     os.environ["CUDA_VISIBLE_DEVICES"] = '{}'.format(args.gpu_id)
+    os.chdir("/home/deepuser/deepnas/DISK2/furkan_workspace/CrowdMultiPrediction-P2PNet")
+
     # create the logging file
     run_log_name = os.path.join(args.output_dir, 'run_log.txt')
     with open(run_log_name, "w") as log_file:
