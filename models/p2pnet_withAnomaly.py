@@ -7,10 +7,10 @@ from util.misc import (NestedTensor, get_world_size,
 from .backbone import build_backbone
 from .matcher import build_matcher_crowd
 from .heads import (RegressionModel, ClassificationModel,
-                    AnchorPoints, Decoder)
+                    AnchorPoints, Decoder, AnomalyClassificationHead)
 
 # the defenition of the P2PNet model
-class P2PNet(nn.Module):
+class P2PNetWithAnomaly(nn.Module):
     def __init__(self, backbone, row=2, line=2):
         super().__init__()
         self.backbone = backbone
@@ -18,14 +18,13 @@ class P2PNet(nn.Module):
         # the number of all anchor points
         num_anchor_points = row * line
 
+        self.fpn = Decoder(256, 512, 512)
+        self.anchor_points = AnchorPoints(pyramid_levels=[3,], row=row, line=line)
         self.regression = RegressionModel(num_features_in=256, num_anchor_points=num_anchor_points)
         self.classification = ClassificationModel(num_features_in=256, \
                                             num_classes=self.num_classes, \
                                             num_anchor_points=num_anchor_points)
-
-        self.anchor_points = AnchorPoints(pyramid_levels=[3,], row=row, line=line)
-
-        self.fpn = Decoder(256, 512, 512)
+        self.anomalyClsHead = AnomalyClassificationHead(channels=256, layerCount=4)
 
     def forward(self, samples: NestedTensor):
         # get the backbone features
