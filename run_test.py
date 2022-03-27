@@ -50,7 +50,7 @@ def main(args, debug=False):
     # load trained model
     if args.weight_path is not None:
         checkpoint = torch.load(args.weight_path, map_location='cpu')
-        model.load_state_dict(checkpoint['model'])
+        model.load_state_dict(checkpoint['model'], strict=True)
     # convert to eval mode
     model.eval()
     # create the pre-processing transform
@@ -60,13 +60,18 @@ def main(args, debug=False):
     ])
 
     # set your image path here
-    img_path = "/home/frkncskn/Desktop/TestVideos/GTA_EVENTS/0/0/0000000000.tiff"
+    img_path = "/home/frkncskn/Desktop/TestVideos/GTA_EVENTS/0/0/0000000000.tiff" 
+    # 2560 x 1440 original size
     # load the images
     img_raw = Image.open(img_path).convert('RGB')
     # round the size
-    width, height = img_raw.size
-    new_width = width // 256 * 192
-    new_height = height // 256 * 192
+    # width, height = img_raw.size
+    # new_width = width // 256 * 192
+    # new_height = height // 256 * 192
+    new_width = 1280
+    new_height = 720
+    print("width: " + str(new_width))
+    print("height: " + str(new_height))
     img_raw = img_raw.resize((new_width, new_height), Image.ANTIALIAS)
     # pre-proccessing
     img = transform(img_raw)

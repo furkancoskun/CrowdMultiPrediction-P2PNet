@@ -20,6 +20,8 @@ class GTA_Events(Dataset):
         self.flip = flip
         self.train = train
 
+        self.lstm_seq_frame_count = 10
+
         dataset_path = "/home/deepuser/deepnas/DISK2/DATASETS/GTA_Events_Dataset"
         if (train):
             txt_path = "/home/deepuser/deepnas/DISK2/DATASETS/GTA_Events_Dataset/train_videos_test.txt"
@@ -29,6 +31,7 @@ class GTA_Events(Dataset):
         txt_file = open(txt_path)
         _ = txt_file.readline()
         lines = txt_file.readlines()
+        self.sequences = []
         for line in lines:
             video_name, anomaly_frame, anomaly_frame_amount = line.split(',')
             anomaly_frame = int(anomaly_frame)
@@ -83,69 +86,85 @@ class GTA_Events(Dataset):
                     "person_count": count
                 }
                 frames.append(dict)
+
+            for i in range(self.lstm_seq_frame_count, len(frames)):
+                self.sequences.append(frames[i-self.lstm_seq_frame_count:i])   
         
-        self.frames = frames
-        sample_random.shuffle(self.frames)
+        sample_random.shuffle(self.self.sequences)
 
     def __len__(self):
         return len(self.frames)
 
     def __getitem__(self, index):
-        frame_dict = self.frames[index]
+        seq = self.sequences[index]
+        seq_count = len(seq)
 
-        frame = cv2.imread(frame_dict["frame_path"]) # 2560 x 1440 original size
-        frame = cv2.resize(frame, (1024,576), interpolation = cv2.INTER_AREA) #resize
-        #frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        imgs_list = []
+        point_targets_list = []
+        anomaly_count=0
+        for i in range(seq_count):
+            frame = cv2.imread(seq[i]["frame_path"]) # 2560 x 1440 original size
+            frame = cv2.resize(frame, (1280,720), interpolation = cv2.INTER_AREA) #resize
+            #frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
-        points = []
-        for coords in frame_dict["person_coord_list"]:
-            x = float(coords["x"])
-            y = float(coords["y"])
-            points.append([x, y])
+            points = []
+            for coords in seq[i]["person_coord_list"]:
+                x = float(coords["x"])
+                y = float(coords["y"])
+                points.append([x, y])
 
-        point = np.array(points)
+            point = np.array(points)
 
-        if self.transform is not None:
-            img = self.transform(img)
+            if self.transform is not None:
+                img = self.transform(img)
 
-        if self.train:
-            # data augmentation -> random scale
-            scale_range = [0.7, 1.3]
-            min_size = min(img.shape[1:])
-            scale = random.uniform(*scale_range)
-            # scale the image and points
-            if scale * min_size > 128:
-                img = torch.nn.functional.upsample_bilinear(img.unsqueeze(0), scale_factor=scale).squeeze(0)
-                point *= scale
-        # random crop augumentaiton
-        if self.train and self.patch:
-            img, point = random_crop(img, point)
+            if self.train:
+                # data augmentation -> random scale
+                scale_range = [0.7, 1.3]
+                min_size = min(img.shape[1:])
+                scale = random.uniform(*scale_range)
+                # scale the image and points
+                if scale * min_size > 128:
+                    img = torch.nn.functional.upsample_bilinear(img.unsqueeze(0), scale_factor=scale).squeeze(0)
+                    point *= scale
+            # random crop augumentaiton
+            if self.train and self.patch:
+                img, point = random_crop(img, point)
+                for i, _ in enumerate(point):
+                    point[i] = torch.Tensor(point[i])
+            # random flipping
+            if random.random() > 0.5 and self.train and self.flip:
+                # random flip
+                img = torch.Tensor(img[:, :, :, ::-1].copy())
+                for i, _ in enumerate(point):
+                    point[i][:, 0] = 128 - point[i][:, 0]
+
+            point = [point]
+
+            img = torch.Tensor(img)
+            # pack up related infos
+            target = [{} for i in range(len(point))]
             for i, _ in enumerate(point):
-                point[i] = torch.Tensor(point[i])
-        # random flipping
-        if random.random() > 0.5 and self.train and self.flip:
-            # random flip
-            img = torch.Tensor(img[:, :, :, ::-1].copy())
-            for i, _ in enumerate(point):
-                point[i][:, 0] = 128 - point[i][:, 0]
+                target[i]['point'] = torch.Tensor(point[i])
+                image_id = int(i)
+                image_id = torch.Tensor([image_id]).long()
+                target[i]['image_id'] = image_id
+                target[i]['labels'] = torch.ones([point[i].shape[0]]).long()
 
-        point = [point]
+            if seq[i]["anomaly"] : anomaly_count = anomaly_count+1 
 
-        # if not self.train:
-        #     point = [point]
+            imgs_list.append(img)
+            point_targets_list.append(target)
 
-        img = torch.Tensor(img)
-        # pack up related infos
-        target = [{} for i in range(len(point))]
-        for i, _ in enumerate(point):
-            target[i]['point'] = torch.Tensor(point[i])
-            image_id = int(i)
-            image_id = torch.Tensor([image_id]).long()
-            target[i]['image_id'] = image_id
-            target[i]['labels'] = torch.ones([point[i].shape[0]]).long()
+        if (anomaly_count > (seq_count/2)):
+            anomaly_target = torch.tensor([1.0])
+        else:
+            anomaly_target = torch.tensor([0.0])
 
-        return img, target
+        imgs = torch.stack(imgs_list)
+        point_targets = torch.stack(point_targets_list)
+        return imgs, point_targets, anomaly_target
 
 def random_crop(img, den, num_patch=4):
     half_h = 128
