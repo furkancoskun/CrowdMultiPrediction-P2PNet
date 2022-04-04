@@ -151,7 +151,7 @@ class P2PNetWithAnomaly(nn.Module):
         # forward the feature pyramid
         features_fpn = self.fpn([features[1], features[2], features[3]])
 
-        batch_size = features[0].shape[0]
+        batch_size = features_fpn[1].shape[0]
         # run the regression and classification branch
         regression = self.regression(features_fpn[1]) * 100 # 8x
         classification = self.classification(features_fpn[1])

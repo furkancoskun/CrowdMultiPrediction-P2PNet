@@ -7,6 +7,7 @@ import math
 import os
 import sys
 from typing import Iterable
+from util.logger import print_speed
 
 import torch
 
@@ -75,36 +76,25 @@ def vis(samples, targets, pred, vis_dir, des=None):
 
 # the training routine
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
-                    logger, tensorboard_writer_dict, log_print_freq,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, end_epoch: int, max_norm: float = 0):
+                    device: torch.device, epoch: int, max_norm: float = 0):
     model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     # iterate all training samples
-    for iter, data in enumerate(data_loader):
-        print(iter)
-        imgs, point_targets, anomaly_target = data
-        samples = imgs.to(device)
-        anomaly_target = anomaly_target.to(device)
-        targets = [{k: v.to(device) for k, v in t.items()} for t in point_targets]
+    for samples, targets in data_loader:
+        samples = samples.to(device)
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         # forward
         outputs = model(samples)
         # calc the losses
-        point_losses, anomaly_loss = criterion(outputs, targets, anomaly_target)
+        loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
-        point_loss = sum(point_losses[k] * weight_dict[k] for k in point_losses.keys() if k in weight_dict)
-        point_loss = torch.mean(point_loss)
-        losses = point_loss + anomaly_loss
-
-        print(point_losses.shape)
-        print(point_loss.shape)
-        print(anomaly_loss.shape)
-        print(losses.shape)
+        losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
         # reduce all losses
-        loss_dict_reduced = utils.reduce_dict(point_losses)
+        loss_dict_reduced = utils.reduce_dict(loss_dict)
         loss_dict_reduced_unscaled = {f'{k}_unscaled': v
                                       for k, v in loss_dict_reduced.items()}
         loss_dict_reduced_scaled = {k: v * weight_dict[k]
@@ -114,8 +104,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         loss_value = losses_reduced_scaled.item()
 
         if not math.isfinite(loss_value):
-            logger.info("Loss is {}, stopping training".format(loss_value))
-            logger.info(loss_dict_reduced)
+            print("Loss is {}, stopping training".format(loss_value))
+            print(loss_dict_reduced)
             sys.exit(1)
         # backward
         optimizer.zero_grad()
@@ -123,68 +113,141 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         if max_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         optimizer.step()
-
         # update logger
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-
-        if ((iter + 1) % log_print_freq == 0):
-            logger.info(
-                'TRAIN - Epoch: [{0}][{1}/{2}] lr: {lr:.7f}\t Batch Time: {batch_time:.3f}s \t Data Time:{data_time:.3f}s \t \
-                 Counting Loss:{counting_loss.avg:.5f} \t Anomaly Loss:{anomaly_loss.avg:.5f} \t Total Loss:{loss.avg:.5f}'.format(
-                    epoch, iter + 1, len(data_loader), lr=optimizer.param_groups[0]["lr"], batch_time=batch_time, data_time=data_time,
-                    loss=losses, counting_loss=counting_losses, anomaly_loss=anomaly_losses))
-
-            print_speed((epoch - 1) * len(data_loader) + iter + 1, batch_time.avg,
-                        end_epoch * len(data_loader), logger)
-
-        # write to tensorboard
-        writer = tensorboard_writer_dict['writer']
-        global_steps = tensorboard_writer_dict['train_global_steps']
-        writer.add_scalars('Train_Losses', {'train_total_loss' : losses.avg, 'train_counting_loss' : counting_losses.avg,
-                            'train_anomaly_loss' : anomaly_losses.avg},global_steps)    
-        writer.add_scalars('Epoch_Iter', {'epoch' : epoch, 'iter' : iter+1},global_steps)      
-        tensorboard_writer_dict['train_global_steps'] = global_steps + 1
-
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
-    logger.info("Averaged stats:", metric_logger)
+    print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
-# the inference routine
+
+def train_one_epoch_batch(model: torch.nn.Module, criterion: torch.nn.Module,
+                    logger, tensorboard_writer_dict, log_print_freq,
+                    data_loader: Iterable, optimizer: torch.optim.Optimizer,
+                    device: torch.device, epoch: int, end_epoch: int, max_norm: float = 0):
+    model.train()
+    criterion.train()
+
+    t2 = time.time()    
+    for iter, data in enumerate(data_loader):
+        t1 = time.time()
+        data_time = t1 - t2
+        imgs, point_targets, anomaly_target = data
+        samples = imgs.squeeze(0).to(device)
+        anomaly_target = anomaly_target.squeeze(0).to(device)
+        targets = [{k: v.squeeze(0).to(device) for k, v in t.items()} for t in point_targets]
+
+        outputs = model(samples)
+
+        point_losses, anomaly_loss = criterion(outputs, targets, anomaly_target)
+        weight_dict = criterion.weight_dict
+        point_loss = sum(point_losses[k] * weight_dict[k] for k in point_losses.keys() if k in weight_dict)
+        point_loss = torch.mean(point_loss)
+        losses = point_loss + anomaly_loss
+
+        # backward
+        optimizer.zero_grad()
+        losses.backward()
+        # if max_norm > 0:
+        #     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        optimizer.step()
+
+        t2 = time.time()
+        process_time = t2 - t1
+
+        if ((iter + 1) % log_print_freq == 0):
+            logger.info('\nTRAIN - Epoch: [{0}][{1}/{2}] lr: {lr:.7f}  Process Time: {process_time:.3f}s Data Time:{data_time:.3f}s  ' \
+              'Point Total Loss: {point_total_loss:.5f}  Point Regression Loss: {point_reg_loss:.5f}  Point Cls Loss: {point_cls_loss:.5f}  ' \
+              'Anomaly Loss: {anomaly_loss:.5f}  Total Loss: {total_loss:.5f}'.format(epoch, iter+1, len(data_loader), lr=optimizer.param_groups[0]["lr"], 
+              process_time=process_time, data_time=data_time, point_total_loss=point_loss.item(), point_reg_loss=point_losses["loss_point"].item(), 
+              point_cls_loss=point_losses["loss_ce"].item(), anomaly_loss=anomaly_loss.item(), total_loss=losses.item()))
+
+            print_speed((epoch) * len(data_loader) + iter + 1, process_time + data_time,
+                        end_epoch * len(data_loader), logger)
+
+        writer = tensorboard_writer_dict['writer']
+        global_steps = tensorboard_writer_dict['train_global_steps']
+        writer.add_scalars('Train_Losses', {'total_loss': losses.item(), 'point_total_loss': point_loss.item(), 'point_cls_loss': point_losses["loss_ce"].item(),
+                            'point_reg_loss': point_losses["loss_point"].item(), 'anomaly_loss': anomaly_loss},global_steps)  
+        writer.add_scalars('Progress_Info', {'epoch' : epoch, 
+                            'iteration' : iter + 1},global_steps) 
+        writer.add_scalars('Time_Info', {'data_time' : data_time, 
+                            'process_time' : process_time},global_steps)                                   
+        tensorboard_writer_dict['train_global_steps'] = global_steps + 1
+
+
+
 @torch.no_grad()
 def evaluate_crowd_no_overlap(model, data_loader, device, vis_dir=None):
     model.eval()
+    
+    threshold = 0.5
 
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
-    # run inference on all images to calc MAE
-    maes = []
-    mses = []
+    count_maes = []
+    count_mses = []
     for samples, targets in data_loader:
         samples = samples.to(device)
-
         outputs = model(samples)
+
         outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
-
-        outputs_points = outputs['pred_points'][0]
-
-        gt_cnt = targets[0]['point'].shape[0]
-        # 0.5 is used by default
-        threshold = 0.5
-
-        points = outputs_points[outputs_scores > threshold].detach().cpu().numpy().tolist()
         predict_cnt = int((outputs_scores > threshold).sum())
-        # if specified, save the visualized images
+        gt_cnt = targets[0]['point'].shape[0]
+        
         if vis_dir is not None: 
+            outputs_points = outputs['pred_points'][0]
+            points = outputs_points[outputs_scores > threshold].detach().cpu().numpy().tolist()
             vis(samples, targets, [points], vis_dir)
-        # accumulate MAE, MSE
-        mae = abs(predict_cnt - gt_cnt)
-        mse = (predict_cnt - gt_cnt) * (predict_cnt - gt_cnt)
-        maes.append(float(mae))
-        mses.append(float(mse))
-    # calc MAE, MSE
-    mae = np.mean(maes)
-    mse = np.sqrt(np.mean(mses))
 
-    return mae, mse
+        # accumulate MAE, MSE
+        count_mae = abs(predict_cnt - gt_cnt)
+        count_mse = (predict_cnt - gt_cnt) * (predict_cnt - gt_cnt)
+        count_maes.append(float(count_mae))
+        count_mses.append(float(count_mse))
+    # calc MAE, MSE
+    count_mae = np.mean(count_maes)
+    count_mse = np.sqrt(np.mean(count_mses))
+
+    return count_mae, count_mse
+
+
+@torch.no_grad()
+def evaluate_crowd_no_overlap_batch(model, data_loader, device, vis_dir=None):
+    model.eval()
+    
+    threshold = 0.5
+
+    count_maes = []
+    count_mses = []
+    anomaly_accuracy = []
+    for imgs, point_targets, anomaly_target in data_loader:
+        samples = imgs.squeeze(0).to(device)
+        anomaly_target = anomaly_target.squeeze(0).to(device)
+        targets = [{k: v.squeeze(0).to(device) for k, v in t.items()} for t in point_targets]
+        
+        outputs = model(samples)
+
+        outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
+        predict_cnt = int((outputs_scores > threshold).sum())
+        gt_cnt = targets[0]['point'].shape[0]
+
+        if vis_dir is not None: 
+            outputs_points = outputs['pred_points'][0]
+            points = outputs_points[outputs_scores > threshold].detach().cpu().numpy().tolist()
+            vis(samples, targets, [points], vis_dir)
+
+        count_mae = abs(predict_cnt - gt_cnt)
+        count_mse = (predict_cnt - gt_cnt) * (predict_cnt - gt_cnt)
+        count_maes.append(float(count_mae))
+        count_mses.append(float(count_mse))
+
+        anomaly_score = outputs['anomaly']
+        accuracy = 1.0 if anomaly_score == anomaly_target else 0.0
+        anomaly_accuracy.append(accuracy)
+
+    # calc MAE, MSE
+    count_mae = np.mean(count_maes)
+    count_mse = np.sqrt(np.mean(count_mses))
+    anomaly_accuracy = np.mean(anomaly_accuracy)
+
+    return count_mae, count_mse, anomaly_accuracy

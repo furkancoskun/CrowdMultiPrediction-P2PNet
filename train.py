@@ -4,12 +4,9 @@ import random
 import time
 from pathlib import Path
 import os
-from models.p2pnet_withAnomaly import P2PNetWithAnomaly
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
 
-from util.logger import create_logger
-import pprint
 from dataset import build_dataset
 from engine import *
 from models import build_model
@@ -22,19 +19,18 @@ def get_args_parser():
     parser = argparse.ArgumentParser('Set parameters for training P2PNet', add_help=False)
     parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--lr_backbone', default=1e-5, type=float)
-    parser.add_argument('--lr_fpn', default=1e-5, type=float)
-    parser.add_argument('--lr_regression_classification', default=1e-5, type=float)
-    parser.add_argument('--lr_lstm_encoder', default=1e-4, type=float)
-    parser.add_argument('--lr_anomaly_cls_head', default=1e-4, type=float)    
-
-    parser.add_argument('--batch_size', default=1, type=int)
+    parser.add_argument('--batch_size', default=8, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
     parser.add_argument('--epochs', default=3500, type=int)
     parser.add_argument('--lr_drop', default=3500, type=int)
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
                         help='gradient clipping max norm')
 
-    parser.add_argument('--model_type', type=str, default="P2PNetWithAnomaly",
+    # Model parameters
+    parser.add_argument('--frozen_weights', type=str, default=None,
+                        help="Path to the pretrained model. If set, only the mask head will be trained")
+
+    parser.add_argument('--model_type', type=str, default="P2PNet",
                         help="P2PNetWithAnomaly or P2PNet")
 
     # * Backbone
@@ -53,24 +49,22 @@ def get_args_parser():
 
     parser.add_argument('--eos_coef', default=0.5, type=float,
                         help="Relative classification weight of the no-object class")
-    parser.add_argument('--row', default=3, type=int,
+    parser.add_argument('--row', default=2, type=int,
                         help="row number of anchor points")
-    parser.add_argument('--line', default=3, type=int,
+    parser.add_argument('--line', default=2, type=int,
                         help="line number of anchor points")
 
     # dataset parameters
-    parser.add_argument('--dataset_file', default='SHHA')
-    parser.add_argument('--data_root', default='./new_public_density_data',
+    parser.add_argument('--dataset_file', default='GTA_EVENTS')
+    parser.add_argument('--data_root', default='NA',
                         help='path where the dataset is')
     
-    parser.add_argument('--output_dir', default='./log',
+    parser.add_argument('--output_dir', default='./logs',
                         help='path where to save, empty for no saving')
     parser.add_argument('--checkpoints_dir', default='./ckpt',
                         help='path where to save checkpoints, empty for no saving')
     parser.add_argument('--tensorboard_dir', default='./runs',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_print_freq', default=10, type=int,
-                        help='frequency of log printing')
 
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--resume', default='', help='resume from checkpoint')
@@ -84,23 +78,23 @@ def get_args_parser():
 
     return parser
 
-# python train.py --data_root onemsiz --dataset_file GTA_EVENTS --epochs 3500 --lr_drop 3500 --output_dir ./logs --checkpoints_dir ./weights 
-# --tensorboard_dir ./logs --lr 0.0005 --lr_backbone 0.0005 --batch_size 4 --eval_freq 10 --gpu_id 3
+#  python train.py --data_root NA --dataset_file GTA_EVENTS --epochs 3500 --lr_drop 3500 --output_dir ./logs --checkpoints_dir ./weights --tensorboard_dir ./logs --lr 0.0005 --lr_backbone 0.0005 --batch_size 1 --eval_freq 10 --gpu_id 1 --num_workers=1
 
 def main(args):
     os.environ["CUDA_VISIBLE_DEVICES"] = '{}'.format(args.gpu_id)
     os.chdir("/home/deepuser/deepnas/DISK2/furkan_workspace/CrowdMultiPrediction-P2PNet")
 
-    logger, time_str = create_logger(args, phase='train')
+    # create the logging file
+    run_log_name = os.path.join(args.output_dir, 'run_log.txt')
+    with open(run_log_name, "w") as log_file:
+        log_file.write('Eval Log %s\n' % time.strftime("%c"))
 
-    tensorboard_writer_path = os.path.join(args.tensorboard_dir, "train_" + time_str)
-    writer_dict = {
-        'writer': SummaryWriter(log_dir=tensorboard_writer_path),
-        'train_global_steps': 0,
-        'validation_global_steps': 0,
-    }
-    logger.info(pprint.pformat('args:{}'.format(args)))
-
+    if args.frozen_weights is not None:
+        assert args.masks, "Frozen training is meant for segmentation only"
+    # backup the arguments
+    print(args)
+    with open(run_log_name, "a") as log_file:
+        log_file.write("{}".format(args))
     device = torch.device('cuda')
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
@@ -113,33 +107,16 @@ def main(args):
     model.to(device)
     criterion.to(device)
 
+    model_without_ddp = model
+
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info('number of params:', n_parameters)
+    print('number of params:', n_parameters)
     # use different optimation params for different parts of the model
     param_dicts = [
+        {"params": [p for n, p in model_without_ddp.named_parameters() if "backbone" not in n and p.requires_grad]},
         {
-            "params": [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad],
+            "params": [p for n, p in model_without_ddp.named_parameters() if "backbone" in n and p.requires_grad],
             "lr": args.lr_backbone,
-        },
-        {
-            "params": [p for n, p in model.named_parameters() if "fpn" in n and p.requires_grad],
-            "lr": args.lr_fpn,
-        },
-        {
-            "params": [p for n, p in model.named_parameters() if ("regression" or "classification") in n and p.requires_grad],
-            "lr": args.lr_regression_classification,
-        },
-        {
-            "params": [p for n, p in model.named_parameters() if "lstm_encoder" in n and p.requires_grad],
-            "lr": args.lr_lstm_encoder,
-        },    
-        {
-            "params": [p for n, p in model.named_parameters() if "anomalyClsHead" in n and p.requires_grad],
-            "lr": args.lr_anomaly_cls_head,
-        },            
-        {   "params": [p for n, p in model.named_parameters() if ("backbone" or "fpn" or "regression" or "classification" or
-                      "lstm_encoder" or "anomalyClsHead")  not in n and p.requires_grad],
-            "lr": args.lr,
         },
     ]
     # Adam is used by default
@@ -162,43 +139,55 @@ def main(args):
     data_loader_val = DataLoader(val_set, 1, sampler=sampler_val,
                                     drop_last=False, collate_fn=utils.collate_fn_crowd, num_workers=args.num_workers)
 
+    if args.frozen_weights is not None:
+        checkpoint = torch.load(args.frozen_weights, map_location='cpu')
+        model_without_ddp.detr.load_state_dict(checkpoint['model'])
     # resume the weights and training state if exists
     if args.resume:
         checkpoint = torch.load(args.resume, map_location='cpu')
-        model.load_state_dict(checkpoint['model'])
+        model_without_ddp.load_state_dict(checkpoint['model'])
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
             args.start_epoch = checkpoint['epoch'] + 1
 
-    logger.info("Start training")
+    print("Start training")
     start_time = time.time()
     # save the performance during the training
     mae = []
     mse = []
+    # the logger writer
+    writer = SummaryWriter(args.tensorboard_dir)
     
     step = 0
     # training starts here
     for epoch in range(args.start_epoch, args.epochs):
         t1 = time.time()
         stat = train_one_epoch(
-            model, criterion, logger, writer_dict, args.log_print_freq, data_loader_train, 
-            optimizer, device, epoch, args.epochs, args.clip_max_norm)
+            model, criterion, data_loader_train, optimizer, device, epoch,
+            args.clip_max_norm)
 
-        logger.info("EPOCH loss/loss@{}: {}".format(epoch, stat['loss']))
-        logger.info("EPOCH loss/loss_ce@{}: {}".format(epoch, stat['loss_ce']))
+        # record the training states after every epoch
+        if writer is not None:
+            with open(run_log_name, "a") as log_file:
+                log_file.write("loss/loss@{}: {}".format(epoch, stat['loss']))
+                log_file.write("loss/loss_ce@{}: {}".format(epoch, stat['loss_ce']))
+                
+            writer.add_scalar('loss/loss', stat['loss'], epoch)
+            writer.add_scalar('loss/loss_ce', stat['loss_ce'], epoch)
 
         t2 = time.time()
-        logger.info('[ep %d][lr %.7f][%.2fs]' % (epoch, optimizer.param_groups[0]['lr'], t2 - t1))
-        
+        print('[ep %d][lr %.7f][%.2fs]' % \
+              (epoch, optimizer.param_groups[0]['lr'], t2 - t1))
+        with open(run_log_name, "a") as log_file:
+            log_file.write('[ep %d][lr %.7f][%.2fs]' % (epoch, optimizer.param_groups[0]['lr'], t2 - t1))
         # change lr according to the scheduler
         lr_scheduler.step()
         # save latest weights every epoch
         checkpoint_latest_path = os.path.join(args.checkpoints_dir, 'latest.pth')
         torch.save({
-            'model': model.state_dict(),
+            'model': model_without_ddp.state_dict(),
         }, checkpoint_latest_path)
-
         # run evaluation
         if epoch % args.eval_freq == 0 and epoch != 0:
             t1 = time.time()
@@ -207,30 +196,32 @@ def main(args):
 
             mae.append(result[0])
             mse.append(result[1])
-
-            logger.info('=======================================test=======================================')
-            logger.info("mae:", result[0], "mse:", result[1], "time:", t2 - t1, "best mae:", np.min(mae), )
-            logger.info("mae:{}, mse:{}, time:{}, best mae:{}".format(result[0], 
+            # print the evaluation results
+            print('=======================================test=======================================')
+            print("mae:", result[0], "mse:", result[1], "time:", t2 - t1, "best mae:", np.min(mae), )
+            with open(run_log_name, "a") as log_file:
+                log_file.write("mae:{}, mse:{}, time:{}, best mae:{}".format(result[0], 
                                 result[1], t2 - t1, np.min(mae)))
-            logger.info('=======================================test=======================================')
-
-            writer.add_scalar('metric/mae', result[0], step)
-            writer.add_scalar('metric/mse', result[1], step)
-            step += 1
+            print('=======================================test=======================================')
+            # recored the evaluation results
+            if writer is not None:
+                with open(run_log_name, "a") as log_file:
+                    log_file.write("metric/mae@{}: {}".format(step, result[0]))
+                    log_file.write("metric/mse@{}: {}".format(step, result[1]))
+                writer.add_scalar('metric/mae', result[0], step)
+                writer.add_scalar('metric/mse', result[1], step)
+                step += 1
 
             # save the best model since begining
             if abs(np.min(mae) - result[0]) < 0.01:
                 checkpoint_best_path = os.path.join(args.checkpoints_dir, 'best_mae.pth')
                 torch.save({
-                    'model': model.state_dict(),
+                    'model': model_without_ddp.state_dict(),
                 }, checkpoint_best_path)
-
     # total time for training
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    logger.info('Training time {}'.format(total_time_str))
-
-    writer_dict['writer'].close()
+    print('Training time {}'.format(total_time_str))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('P2PNet training and evaluation script', parents=[get_args_parser()])
