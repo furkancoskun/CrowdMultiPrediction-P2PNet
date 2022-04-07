@@ -197,7 +197,7 @@ def main(args):
             logger.info('===================test===================')
             logger.info('count_mae:{count_mae:.5f}, count_mse:{count_mse:.5f}, anomaly_accuracy:{anomaly_accuracy:.5f}, best_mae:{best_mae:.5f}, ' \
                         'best_anomaly_accuracy:{best_anomaly_accuracy:.5f}, time:{time:.5f}s'.format(count_mae=result[0], count_mse=result[1],
-                        anomaly_accuracy=result[2], time=(t2-t1), best_mae=np.min(mae), best_anomaly_accuracy=np.min(anomaly_accuracy)))
+                        anomaly_accuracy=result[2], time=(t2-t1), best_mae=np.min(mae), best_anomaly_accuracy=np.max(anomaly_accuracy)))
             logger.info('===================test===================')
 
             writer = writer_dict['writer']

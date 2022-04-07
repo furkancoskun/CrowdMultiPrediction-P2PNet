@@ -197,10 +197,11 @@ class AnomalyClassificationHead(nn.Module):
         anomalyClsHeadLayerList.append(nn.AdaptiveAvgPool2d((1,1)))
         self.add_module('anomalyClsModule', nn.Sequential(*anomalyClsHeadLayerList))
         self.fc = nn.Linear(channels, 1)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         x = self.anomalyClsModule(x)
         x = torch.flatten(x)
         x = self.fc(x)
-        output = F.softmax(x, dim=0)
+        output = self.sigmoid(x)
         return output

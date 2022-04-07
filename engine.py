@@ -135,7 +135,7 @@ def train_one_epoch_batch(model: torch.nn.Module, criterion: torch.nn.Module,
         data_time = t1 - t2
         imgs, point_targets, anomaly_target = data
         samples = imgs.squeeze(0).to(device)
-        anomaly_target = anomaly_target.squeeze(0).to(device)
+        anomaly_target = anomaly_target.squeeze(0).type(torch.FloatTensor).to(device)
         targets = [{k: v.squeeze(0).to(device) for k, v in t.items()} for t in point_targets]
 
         outputs = model(samples)
@@ -242,7 +242,8 @@ def evaluate_crowd_no_overlap_batch(model, data_loader, device, vis_dir=None):
         count_mses.append(float(count_mse))
 
         anomaly_score = outputs['anomaly']
-        accuracy = 1.0 if anomaly_score == anomaly_target else 0.0
+        anomaly_score_binary = 1.0 if (anomaly_score > 0.5) else 0.0
+        accuracy = 1.0 if anomaly_score_binary == anomaly_target else 0.0
         anomaly_accuracy.append(accuracy)
 
     # calc MAE, MSE
