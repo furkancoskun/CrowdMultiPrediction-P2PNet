@@ -22,6 +22,7 @@ class GTA_Events_Anomaly(Dataset):
         self.train = train
 
         self.lstm_seq_frame_count = 8
+        self.sample_freq = 3
 
         dataset_path = "/home/deepuser/deepnas/DISK2/DATASETS/GTA_Events_Dataset"
         if (train):
@@ -37,6 +38,8 @@ class GTA_Events_Anomaly(Dataset):
         _ = txt_file.readline()
         lines = txt_file.readlines()
         self.sequences = []
+        total_anomaly_frame_count = 0
+        total_non_anomaly_frame_count = 0
         for line in lines:
             video_name, anomaly_frame, anomaly_frame_amount = line.split(',')
             logger.info("      " + str(video_name) + " Loading...")
@@ -45,7 +48,8 @@ class GTA_Events_Anomaly(Dataset):
             seq_directory = os.path.join(dataset_path,video_name,video_name)
 
             frames = []
-            for i in range (anomaly_frame-anomaly_frame_amount, anomaly_frame):
+            # for i in range (anomaly_frame-anomaly_frame_amount+(self.lstm_seq_frame_count*self.sample_freq), anomaly_frame):
+            for i in range (anomaly_frame-anomaly_frame_amount+18, anomaly_frame):
                 image_name = str(i).zfill(10)
                 frame_path = os.path.join(seq_directory, image_name + ".tiff")
                 json_file_path = os.path.join(seq_directory, image_name + ".json")
@@ -67,6 +71,7 @@ class GTA_Events_Anomaly(Dataset):
                     "person_coord_list": coord_list,
                     "person_count": count
                 }
+                total_non_anomaly_frame_count += 1 
                 frames.append(dict)
 
             for i in range (anomaly_frame, anomaly_frame+anomaly_frame_amount):
@@ -91,13 +96,22 @@ class GTA_Events_Anomaly(Dataset):
                     "person_coord_list": coord_list,
                     "person_count": count
                 }
+                total_anomaly_frame_count += 1 
                 frames.append(dict)
 
-            for i in range(self.lstm_seq_frame_count, len(frames)):
-                self.sequences.append(frames[i-self.lstm_seq_frame_count:i])   
+            seq_length = self.lstm_seq_frame_count * self.sample_freq
+            for i in range(seq_length, len(frames)):
+                sample_seq = []
+                sample_seq.append(frames[i-seq_length:i][::self.sample_freq])   
+                self.sequences.append(sample_seq[0])   
         
         sample_random.shuffle(self.sequences)
         logger.info("Dataset Loaded!")
+        logger.info("---Dataset Statistics:")
+        logger.info("       Total Seq Count               : "+str(len(self.sequences)))
+        logger.info("       Total Frame Count             : "+str(total_anomaly_frame_count+total_non_anomaly_frame_count))
+        logger.info("       Total Anomaly Frame Count     : "+str(total_anomaly_frame_count))
+        logger.info("       Total Non-Anomaly Frame Count : "+str(total_non_anomaly_frame_count))
 
     def __len__(self):
         return len(self.sequences)
@@ -138,9 +152,59 @@ class GTA_Events_Anomaly(Dataset):
             target[i]['labels'] = torch.ones([point_list[i].shape[0]]).long()
             if seq[i]["anomaly"] : anomaly_count = anomaly_count+1 
 
-        if (anomaly_count > (seq_count/2)):
+        if (anomaly_count > (seq_count*0.8)):
             anomaly_target = torch.tensor([1.0])
         else:
             anomaly_target = torch.tensor([0.0])
 
         return img, target, anomaly_target
+
+if __name__ == '__main__':
+    import os
+    from torch.utils.data import DataLoader
+    import torchvision.transforms as standard_transforms
+    import logging
+
+    head = '%(asctime)-15s %(message)s'
+    logging.basicConfig(filename=str("./logs/GTA_Events_Anomaly_Dataset_main_log.txt"),
+                        format=head)
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    console = logging.StreamHandler()
+    logging.getLogger('').addHandler(console)
+
+    transform = standard_transforms.Compose([
+        standard_transforms.ToTensor(), 
+        standard_transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                    std=[0.229, 0.224, 0.225]),
+    ])
+
+    train_set = GTA_Events_Anomaly("useless", logger, train=True, transform=transform, patch=False, flip=False)
+     
+    train_loader = DataLoader(train_set, batch_size=1, num_workers=1, pin_memory=False)
+
+    print("Data loader created!")
+    print("Data loader len: " + str(train_loader.__len__()))
+
+    # cv2.namedWindow("images", cv2.WINDOW_NORMAL)
+    for iter, data in enumerate(train_loader):
+        print("Iter: {iter}")
+        frames, _, anomaly_gt = data
+        images = []
+        for frame in frames[0]:
+            frame = frame.cpu().numpy()[:,:,:].transpose(1,2,0).astype(np.float32) 
+            if (images == []):
+                images = frame
+            else:
+                images = cv2.hconcat([images, frame])
+        print ("Anomaly: " + str(anomaly_gt.cpu().item()))
+        normalizedImg = np.zeros(images.shape)
+        normalizedImg = cv2.normalize(images,  normalizedImg, 0, 255, cv2.NORM_MINMAX)
+        normalizedImg = cv2.cvtColor(normalizedImg, cv2.COLOR_BGR2RGB)
+        images = (normalizedImg).astype(np.uint8) 
+        cv2.imwrite("iter_"+str(iter)+"_anomaly_"+str(anomaly_gt.cpu().item())+".png", images) 
+        # cv2.imshow("images", images) 
+        # k = cv2.waitKey(0)
+        # if k == 27:
+        #     cv2.destroyAllWindows()
+        #     break        

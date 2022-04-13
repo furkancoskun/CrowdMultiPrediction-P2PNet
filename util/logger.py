@@ -10,7 +10,7 @@ def create_logger(args, phase='train'):
         print('=> creating {}'.format(output_dir))
         output_dir.mkdir(parents=True, exist_ok=True)
     time_str = time.strftime('%Y-%m-%d-%H-%M')
-    log_file = 'CMP_{}_{}.log'.format(time_str, phase)
+    log_file = 'P2P_CrowdCountingAnomaly_{}_{}.log'.format(time_str, phase)
     final_log_file = output_dir / log_file
     head = '%(asctime)-15s %(message)s'
     logging.basicConfig(filename=str(final_log_file),format=head)
@@ -27,9 +27,9 @@ def print_speed(i, i_time, n, logger):
     remaining_day = math.floor(remaining_time / 86400)
     remaining_hour = math.floor(remaining_time / 3600 - remaining_day * 24)
     remaining_min = math.floor(remaining_time / 60 - remaining_day * 1440 - remaining_hour * 60)
-    logger.info('\nProgress: %d / %d [%d%%], Speed: %.3f s/iter, ETA %d:%02d:%02d (D:H:M)' % (i, n, 
+    logger.info('       Progress: %d / %d [%d%%], Speed: %.3f s/iter, ETA %d:%02d:%02d (D:H:M)' % (i, n, 
                  i/n*100, average_time, remaining_day, remaining_hour, remaining_min))
-    logger.info('PROGRESS: {:.2f}%\n'.format(100 * i / n))
+    logger.info('       PROGRESS: {:.2f}%'.format(100 * i / n))
 
 def check_trainable(model, logger):
     trainable_params = [p for p in model.parameters() if p.requires_grad]

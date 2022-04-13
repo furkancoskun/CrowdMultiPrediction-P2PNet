@@ -129,6 +129,9 @@ def train_one_epoch_batch(model: torch.nn.Module, criterion: torch.nn.Module,
     model.train()
     criterion.train()
 
+    epoch_total_loss = 0
+    epoch_total_point_loss = 0
+    epoch_total_anomaly_loss = 0
     t2 = time.time()    
     for iter, data in enumerate(data_loader):
         t1 = time.time()
@@ -145,6 +148,11 @@ def train_one_epoch_batch(model: torch.nn.Module, criterion: torch.nn.Module,
         point_loss = sum(point_losses[k] * weight_dict[k] for k in point_losses.keys() if k in weight_dict)
         point_loss = torch.mean(point_loss)
         losses = point_loss + anomaly_loss
+        #losses = anomaly_loss
+
+        epoch_total_loss += losses.item()
+        epoch_total_point_loss += point_loss.item()
+        epoch_total_anomaly_loss += anomaly_loss.item()
 
         # backward
         optimizer.zero_grad()
@@ -176,6 +184,10 @@ def train_one_epoch_batch(model: torch.nn.Module, criterion: torch.nn.Module,
                             'process_time' : process_time},global_steps)                                   
         tensorboard_writer_dict['train_global_steps'] = global_steps + 1
 
+    epoch_average_loss = epoch_total_loss/iter
+    epoch_average_point_loss = epoch_total_point_loss/iter
+    epoch_average_anomaly_loss = epoch_total_anomaly_loss/iter
+    return epoch_average_point_loss, epoch_average_anomaly_loss, epoch_average_loss
 
 
 @torch.no_grad()
@@ -213,8 +225,7 @@ def evaluate_crowd_no_overlap(model, data_loader, device, vis_dir=None):
 
 @torch.no_grad()
 def evaluate_crowd_no_overlap_batch(model, data_loader, device, vis_dir=None):
-    model.eval()
-    
+    model.train()
     threshold = 0.5
 
     count_maes = []
@@ -222,11 +233,9 @@ def evaluate_crowd_no_overlap_batch(model, data_loader, device, vis_dir=None):
     anomaly_accuracy = []
     for imgs, point_targets, anomaly_target in data_loader:
         samples = imgs.squeeze(0).to(device)
-        anomaly_target = anomaly_target.squeeze(0).to(device)
+        anomaly_target = anomaly_target.squeeze(0).type(torch.FloatTensor)
         targets = [{k: v.squeeze(0).to(device) for k, v in t.items()} for t in point_targets]
-        
         outputs = model(samples)
-
         outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
         predict_cnt = int((outputs_scores > threshold).sum())
         gt_cnt = targets[0]['point'].shape[0]

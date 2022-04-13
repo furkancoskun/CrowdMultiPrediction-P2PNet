@@ -81,8 +81,8 @@ def get_args_parser():
 
     return parser
 
-# python train_anomaly.py --epochs 3500 --lr_drop 3500 --output_dir ./logs --checkpoints_dir ./weights 
-# --tensorboard_dir ./logs --batch_size 1 --initialize_weights weights/SHTechA.pth --eval_freq 1 --gpu_id 1
+# python train_anomaly.py --batch_size 1 --initialize_weights weights/SHTechA.pth --gpu_id 1
+
 def main(args):
     os.environ["CUDA_VISIBLE_DEVICES"] = '{}'.format(args.gpu_id)
     os.chdir("/home/deepuser/deepnas/DISK2/furkan_workspace/CrowdMultiPrediction-P2PNet")
@@ -145,9 +145,9 @@ def main(args):
     loading_data = build_dataset(args=args)
     train_set, val_set = loading_data(args.data_root, logger)
     data_loader_train = DataLoader(train_set, batch_size=args.batch_size, num_workers=args.num_workers,
-                                   pin_memory=True, sampler=None, drop_last=True)
+                                   pin_memory=True, sampler=None, drop_last=False)
     data_loader_val = DataLoader(val_set, batch_size=args.batch_size, num_workers=args.num_workers,
-                                   pin_memory=True, sampler=None, drop_last=True)
+                                   pin_memory=True, sampler=None, drop_last=False)
 
     if args.resume:
         logger.info('\n=============Loading from resume=============')
@@ -173,10 +173,17 @@ def main(args):
     anomaly_accuracy = []
 
     for epoch in range(args.start_epoch, args.epochs):
-        train_one_epoch_batch( model, criterion, logger, writer_dict, args.log_print_freq, data_loader_train, 
+        t1 = time.time()
+        epoch_average_point_loss, epoch_average_anomaly_loss, epoch_average_loss = train_one_epoch_batch( 
+            model, criterion, logger, writer_dict, args.log_print_freq, data_loader_train, 
             optimizer, device, epoch, args.epochs, args.clip_max_norm)
-        
-        
+        t2 = time.time()
+
+        logger.info('\nTRAIN - Epoch_{0} Finished'.format(epoch+1))
+        logger.info('TRAIN - Epoch_{0} Averages: Elapsed Time: {elapsed_time:.5f}s Average Point Loss: {avg_point_loss:.5f} \
+        Average Anomaly Loss: {avg_anomaly_loss:.5f}  Average Total Loss: {avg_total_loss:.5f}'.format(epoch+1, elapsed_time = (t2-t1),
+        avg_point_loss=epoch_average_point_loss, avg_anomaly_loss=epoch_average_anomaly_loss, avg_total_loss=epoch_average_loss))
+
         lr_scheduler.step()
         
         checkpoint_latest_path = os.path.join(args.checkpoints_dir, 'anomaly_model_e%d.pth' % (epoch + 1))

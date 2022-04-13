@@ -25,7 +25,7 @@ def loading_gta_events_anomaly_data(data_root, logger):
     # create the training dataset
     train_set = GTA_Events_Anomaly(data_root, logger, train=True, transform=transform, patch=False, flip=False)
     # create the validation dataset
-    val_set = GTA_Events_Anomaly(data_root, logger, train=False, transform=transform)
+    val_set = GTA_Events_Anomaly(data_root, logger, train=False, transform=transform, patch=False, flip=False)
     return train_set, val_set
 
 # build dataset according to given 'dataset_file'
