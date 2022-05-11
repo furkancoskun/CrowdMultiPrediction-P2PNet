@@ -205,3 +205,24 @@ class AnomalyClassificationHead(nn.Module):
         x = self.fc(x)
         output = self.sigmoid(x)
         return output
+
+class AnomalyClassificationHeadv2(nn.Module):
+    def __init__(self, channels=2048, layerCount=3):
+        super(AnomalyClassificationHeadv2, self).__init__()
+        anomalyClsHeadLayerList = []
+        for i in range(layerCount):
+            anomalyClsHeadLayerList.append(nn.Conv2d(channels, channels, 
+                                                     kernel_size=3, stride=1, padding=1))
+            anomalyClsHeadLayerList.append(nn.BatchNorm2d(channels))
+            anomalyClsHeadLayerList.append(nn.ReLU())
+        anomalyClsHeadLayerList.append(nn.AdaptiveAvgPool2d((8,8)))
+        self.add_module('anomalyClsModule', nn.Sequential(*anomalyClsHeadLayerList))
+        self.fc = nn.Linear(channels*8*8, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        x = self.anomalyClsModule(x)
+        x = torch.flatten(x)
+        x = self.fc(x)
+        output = self.sigmoid(x)
+        return output
